@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -66,6 +67,15 @@ type ReservationSlotModel struct {
 	StartAt int64 `db:"start_at" json:"start_at"`
 	EndAt   int64 `db:"end_at" json:"end_at"`
 }
+
+var (
+	// 変数の初期化
+	// グローバルな変数として、livestreamIDに対するタグ一覧を保持する
+	// キー: livestreamID, 値: タグ一覧
+	livestreamTags = map[int64][]Tag{}
+	// 排他制御用のmutex
+	livestreamTagsMu = sync.RWMutex{}
+)
 
 func reserveLivestreamHandler(c echo.Context) error {
 	ctx := c.Request().Context()
@@ -150,12 +160,17 @@ func reserveLivestreamHandler(c echo.Context) error {
 
 	// タグ追加
 	for _, tagID := range req.Tags {
+		livestreamTagsMu.Lock()
 		if _, err := tx.NamedExecContext(ctx, "INSERT INTO livestream_tags (livestream_id, tag_id) VALUES (:livestream_id, :tag_id)", &LivestreamTagModel{
 			LivestreamID: livestreamID,
 			TagID:        tagID,
 		}); err != nil {
+			livestreamTagsMu.Unlock()
 			return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert livestream tag: "+err.Error())
 		}
+
+		delete(livestreamTags, livestreamID)
+		livestreamTagsMu.Unlock()
 	}
 
 	livestream, err := fillLivestreamResponse(ctx, tx, *livestreamModel)
@@ -494,22 +509,27 @@ func fillLivestreamResponse(ctx context.Context, tx *sqlx.Tx, livestreamModel Li
 		return Livestream{}, err
 	}
 
-	var livestreamTagModels []*LivestreamTagModel
-	if err := tx.SelectContext(ctx, &livestreamTagModels, "SELECT * FROM livestream_tags WHERE livestream_id = ?", livestreamModel.ID); err != nil {
-		return Livestream{}, err
-	}
+	tags := []Tag{}
 
-	tags := make([]Tag, len(livestreamTagModels))
-	for i := range livestreamTagModels {
-		tagModel := TagModel{}
-		if err := tx.GetContext(ctx, &tagModel, "SELECT * FROM tags WHERE id = ?", livestreamTagModels[i].TagID); err != nil {
+	// RLockしてからキャッシュ(変数livestreamTags)を参照
+	livestreamTagsMu.RLock()
+	// キャッシュ(変数livestreamTags)に存在する場合はそれを使う
+	if t, ok := livestreamTags[livestreamModel.ID]; ok {
+		// ここでRUnlockしておかないと, fillLivestreamResponse() が再帰的に呼ばれたときにデッドロックする
+		defer livestreamTagsMu.RUnlock()
+		tags = t
+	} else {
+		// キャッシュに存在しない場合はRLockを解放
+		livestreamTagsMu.RUnlock()
+		// LockしてからDBから取得
+		livestreamTagsMu.Lock()
+		if err := tx.SelectContext(ctx, &tags, "SELECT tags.* FROM tags INNER JOIN livestream_tags ON tags.id = livestream_tags.tag_id WHERE livestream_tags.livestream_id = ?", livestreamModel.ID); err != nil {
+			livestreamTagsMu.Unlock()
 			return Livestream{}, err
 		}
 
-		tags[i] = Tag{
-			ID:   tagModel.ID,
-			Name: tagModel.Name,
-		}
+		livestreamTags[livestreamModel.ID] = tags
+		livestreamTagsMu.Unlock()
 	}
 
 	livestream := Livestream{
