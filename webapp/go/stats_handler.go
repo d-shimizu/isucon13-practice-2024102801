@@ -199,6 +199,7 @@ func getUserStatisticsHandler(c echo.Context) error {
 	return c.JSON(http.StatusOK, stats)
 }
 
+// ライブストリームの統計情報を取得する
 func getLivestreamStatisticsHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
@@ -227,29 +228,68 @@ func getLivestreamStatisticsHandler(c echo.Context) error {
 		}
 	}
 
-	var livestreams []*LivestreamModel
-	if err := tx.SelectContext(ctx, &livestreams, "SELECT * FROM livestreams"); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	var livestreams []struct {
+		ID int64 `db:"id"`
+	}
+	if err := tx.SelectContext(ctx, &livestreams, "SELECT id FROM livestreams"); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livestreams: "+err.Error())
+	}
+	data := map[int64]LivestreamRankingEntry{}
+	for _, s := range livestreams {
+		data[s.ID] = LivestreamRankingEntry{LivestreamID: s.ID}
+	}
+
+	// ライブごとのリアクション数
+	type LiveReaction struct {
+		LivestreamID int64 `db:"livestream_id"`
+		Reactions    int64 `db:"reactions"`
+	}
+	var reactions []*LiveReaction
+
+	if err := tx.SelectContext(ctx, &reactions, `
+		SELECT
+			r.livestream_id AS livestream_id
+			, COUNT(*) AS reactions
+		FROM reactions r
+		GROUP BY r.livestream_id
+	`); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to count reactions: "+err.Error())
+	}
+
+	// ライブごとのチップ合計取得
+	type LiveTotalTip struct {
+		ID        int64 `db:"id"`
+		TotalTips int64 `db:"total_tips"`
+	}
+	var totalTips []*LiveTotalTip
+
+	if err := tx.SelectContext(ctx, &totalTips, `
+	SELECT
+		l2.livestream_id AS id,
+		IFNULL(SUM(l2.tip), 0) AS total_tips
+	FROM livecomments l2
+	GROUP BY l2.livestream_id
+	`); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livestreams: "+err.Error())
 	}
 
+	// リアクション数
+	for _, reaction := range reactions {
+		d := data[reaction.LivestreamID]
+		d.Score += reaction.Reactions
+		data[reaction.LivestreamID] = d
+	}
+	totalReactions := data[livestream.ID].Score
+
 	// ランク算出
-	var ranking LivestreamRanking
-	for _, livestream := range livestreams {
-		var reactions int64
-		if err := tx.GetContext(ctx, &reactions, "SELECT COUNT(*) FROM livestreams l INNER JOIN reactions r ON l.id = r.livestream_id WHERE l.id = ?", livestream.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to count reactions: "+err.Error())
-		}
-
-		var totalTips int64
-		if err := tx.GetContext(ctx, &totalTips, "SELECT IFNULL(SUM(l2.tip), 0) FROM livestreams l INNER JOIN livecomments l2 ON l.id = l2.livestream_id WHERE l.id = ?", livestream.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to count tips: "+err.Error())
-		}
-
-		score := reactions + totalTips
-		ranking = append(ranking, LivestreamRankingEntry{
-			LivestreamID: livestream.ID,
-			Score:        score,
-		})
+	for _, tip := range totalTips {
+		d := data[tip.ID]
+		d.Score += tip.TotalTips
+		data[tip.ID] = d
+	}
+	var ranking = make(LivestreamRanking, 0, len(data))
+	for _, entry := range data {
+		ranking = append(ranking, entry)
 	}
 	sort.Sort(ranking)
 
@@ -275,10 +315,10 @@ func getLivestreamStatisticsHandler(c echo.Context) error {
 	}
 
 	// リアクション数
-	var totalReactions int64
-	if err := tx.GetContext(ctx, &totalReactions, "SELECT COUNT(*) FROM livestreams l INNER JOIN reactions r ON r.livestream_id = l.id WHERE l.id = ?", livestreamID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to count total reactions: "+err.Error())
-	}
+	//var totalReactions int64
+	//if err := tx.GetContext(ctx, &totalReactions, "SELECT COUNT(*) FROM livestreams l INNER JOIN reactions r ON r.livestream_id = l.id WHERE l.id = ?", livestreamID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	//	return echo.NewHTTPError(http.StatusInternalServerError, "failed to count total reactions: "+err.Error())
+	//}
 
 	// スパム報告数
 	var totalReports int64
