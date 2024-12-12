@@ -69,12 +69,7 @@ type ReservationSlotModel struct {
 }
 
 var (
-	// 変数の初期化
-	// グローバルな変数として、livestreamIDに対するタグ一覧を保持する
-	// キー: livestreamID, 値: タグ一覧
-	livestreamTags = map[int64][]Tag{}
-	// 排他制御用のmutex
-	livestreamTagsMu = sync.RWMutex{}
+	livestreamTagsCache = sync.Map{}
 )
 
 func reserveLivestreamHandler(c echo.Context) error {
@@ -160,17 +155,15 @@ func reserveLivestreamHandler(c echo.Context) error {
 
 	// タグ追加
 	for _, tagID := range req.Tags {
-		livestreamTagsMu.Lock()
 		if _, err := tx.NamedExecContext(ctx, "INSERT INTO livestream_tags (livestream_id, tag_id) VALUES (:livestream_id, :tag_id)", &LivestreamTagModel{
 			LivestreamID: livestreamID,
 			TagID:        tagID,
 		}); err != nil {
-			livestreamTagsMu.Unlock()
 			return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert livestream tag: "+err.Error())
 		}
 
-		delete(livestreamTags, livestreamID)
-		livestreamTagsMu.Unlock()
+		// キャッシュを削除
+		livestreamTagsCache.Delete(livestreamID)
 	}
 
 	livestream, err := fillLivestreamResponse(ctx, tx, *livestreamModel)
@@ -512,24 +505,16 @@ func fillLivestreamResponse(ctx context.Context, tx *sqlx.Tx, livestreamModel Li
 	tags := []Tag{}
 
 	// RLockしてからキャッシュ(変数livestreamTags)を参照
-	livestreamTagsMu.RLock()
-	// キャッシュ(変数livestreamTags)に存在する場合はそれを使う
-	if t, ok := livestreamTags[livestreamModel.ID]; ok {
-		// ここでRUnlockしておかないと, fillLivestreamResponse() が再帰的に呼ばれたときにデッドロックする
-		defer livestreamTagsMu.RUnlock()
-		tags = t
+
+	if t, ok := livestreamTagsCache.Load(livestreamModel.ID); ok {
+		tags = t.([]Tag)
+		// キャッシュ(変数livestreamTags)に存在する場合はそれを使う
 	} else {
-		// キャッシュに存在しない場合はRLockを解放
-		livestreamTagsMu.RUnlock()
-		// LockしてからDBから取得
-		livestreamTagsMu.Lock()
 		if err := tx.SelectContext(ctx, &tags, "SELECT tags.* FROM tags INNER JOIN livestream_tags ON tags.id = livestream_tags.tag_id WHERE livestream_tags.livestream_id = ?", livestreamModel.ID); err != nil {
-			livestreamTagsMu.Unlock()
 			return Livestream{}, err
 		}
 
-		livestreamTags[livestreamModel.ID] = tags
-		livestreamTagsMu.Unlock()
+		livestreamTagsCache.Store(livestreamModel.ID, tags)
 	}
 
 	livestream := Livestream{
