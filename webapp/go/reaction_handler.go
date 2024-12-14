@@ -22,17 +22,18 @@ type ReactionModel struct {
 }
 
 type Reaction struct {
-	ID         int64      `json:"id"`
-	EmojiName  string     `json:"emoji_name"`
-	User       User       `json:"user"`
-	Livestream Livestream `json:"livestream"`
-	CreatedAt  int64      `json:"created_at"`
+	ID         int64       `json:"id"`
+	EmojiName  string      `json:"emoji_name"`
+	User       User        `json:"user"`
+	Livestream *Livestream `json:"livestream"`
+	CreatedAt  int64       `json:"created_at"`
 }
 
 type PostReactionRequest struct {
 	EmojiName string `json:"emoji_name"`
 }
 
+// ライブ配信に対するリアクション一覧取得
 func getReactionsHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
@@ -41,6 +42,7 @@ func getReactionsHandler(c echo.Context) error {
 		return err
 	}
 
+	// error already checked
 	livestreamID, err := strconv.Atoi(c.Param("livestream_id"))
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "livestream_id in path must be integer")
@@ -52,6 +54,17 @@ func getReactionsHandler(c echo.Context) error {
 	}
 	defer tx.Rollback()
 
+	livestreamModel := LivestreamModel{}
+	if err := tx.GetContext(ctx, &livestreamModel, "SELECT * FROM livestreams WHERE id = ?", livestreamID); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill reaction: "+err.Error())
+	}
+	livestream, err := fillLivestreamResponse(ctx, tx, livestreamModel)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill reaction: "+err.Error())
+	}
+	//reaction, err := fillReactionResponse(ctx, tx, reactionModels[i], &livestream)
+
+	// limit の有無でクエリを変える
 	query := "SELECT * FROM reactions WHERE livestream_id = ? ORDER BY created_at DESC"
 	if c.QueryParam("limit") != "" {
 		limit, err := strconv.Atoi(c.QueryParam("limit"))
@@ -68,7 +81,8 @@ func getReactionsHandler(c echo.Context) error {
 
 	reactions := make([]Reaction, len(reactionModels))
 	for i := range reactionModels {
-		reaction, err := fillReactionResponse(ctx, tx, reactionModels[i])
+		// ここでループするのでlivestreamの取得をこのメソッドの中で実行している
+		reaction, err := fillReactionResponse(ctx, tx, reactionModels[i], &livestream)
 		if err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill reaction: "+err.Error())
 		}
@@ -129,7 +143,17 @@ func postReactionHandler(c echo.Context) error {
 	}
 	reactionModel.ID = reactionID
 
-	reaction, err := fillReactionResponse(ctx, tx, reactionModel)
+	// fill reaction
+	livestreamModel := LivestreamModel{}
+	if err := tx.GetContext(ctx, &livestreamModel, "SELECT * FROM livestreams WHERE id = ?", livestreamID); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill reaction: "+err.Error())
+	}
+	livestream, err := fillLivestreamResponse(ctx, tx, livestreamModel)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill reaction: "+err.Error())
+	}
+
+	reaction, err := fillReactionResponse(ctx, tx, reactionModel, &livestream)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill reaction: "+err.Error())
 	}
@@ -141,7 +165,7 @@ func postReactionHandler(c echo.Context) error {
 	return c.JSON(http.StatusCreated, reaction)
 }
 
-func fillReactionResponse(ctx context.Context, tx *sqlx.Tx, reactionModel ReactionModel) (Reaction, error) {
+func fillReactionResponse(ctx context.Context, tx *sqlx.Tx, reactionModel ReactionModel, livestream *Livestream) (Reaction, error) {
 	userModel := UserModel{}
 	if err := tx.GetContext(ctx, &userModel, "SELECT * FROM users WHERE id = ?", reactionModel.UserID); err != nil {
 		return Reaction{}, err
@@ -151,14 +175,14 @@ func fillReactionResponse(ctx context.Context, tx *sqlx.Tx, reactionModel Reacti
 		return Reaction{}, err
 	}
 
-	livestreamModel := LivestreamModel{}
-	if err := tx.GetContext(ctx, &livestreamModel, "SELECT * FROM livestreams WHERE id = ?", reactionModel.LivestreamID); err != nil {
-		return Reaction{}, err
-	}
-	livestream, err := fillLivestreamResponse(ctx, tx, livestreamModel)
-	if err != nil {
-		return Reaction{}, err
-	}
+	//livestreamModel := LivestreamModel{}
+	//if err := tx.GetContext(ctx, &livestreamModel, "SELECT * FROM livestreams WHERE id = ?", reactionModel.LivestreamID); err != nil {
+	//	return Reaction{}, err
+	//}
+	//livestream, err := fillLivestreamResponse(ctx, tx, livestreamModel)
+	//if err != nil {
+	//	return Reaction{}, err
+	//}
 
 	reaction := Reaction{
 		ID:         reactionModel.ID,
