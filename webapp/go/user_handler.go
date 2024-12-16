@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"time"
 
@@ -108,10 +110,9 @@ func getIconHandler(c echo.Context) error {
 
 	// 画像の取得
 	var imageWithHash struct {
-		Image []byte `db:"image"`
-		Hash  string `db:"hash"`
+		Hash string `db:"hash"`
 	}
-	if err := tx.GetContext(ctx, &imageWithHash, "SELECT image, hash FROM icons WHERE user_id = ?", userID); err != nil {
+	if err := tx.GetContext(ctx, &imageWithHash, "SELECT hash FROM icons WHERE user_id = ?", userID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return c.File(fallbackImage)
 		} else {
@@ -131,7 +132,15 @@ func getIconHandler(c echo.Context) error {
 		return c.NoContent(http.StatusNotModified)
 	}
 
-	return c.Blob(http.StatusOK, "image/jpeg", imageWithHash.Image)
+	//return c.Blob(http.StatusOK, "image/jpeg", imageWithHash.Image)
+	return c.File(getUserIconFilePath(imageWithHash.Hash))
+}
+
+const UserIconImageDir = "/home/isucon/webapp/img"
+
+func getUserIconFilePath(hash string) string {
+	return fmt.Sprintf("%s/%s.jpg", UserIconImageDir, hash)
+	//return fmt.Sprintf("%s/%s.jpg", UserIconImageDir, hash)
 }
 
 func postIconHandler(c echo.Context) error {
@@ -163,7 +172,21 @@ func postIconHandler(c echo.Context) error {
 	}
 
 	iconHash := sha256.Sum256(req.Image)
-	rs, err := tx.ExecContext(ctx, "INSERT INTO icons (user_id, image, hash) VALUES (?, ?, ?)", userID, req.Image, hex.EncodeToString(iconHash[:]))
+
+	hexHash := hex.EncodeToString(iconHash[:])
+
+	f, err := os.OpenFile(getUserIconFilePath(hexHash), os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0777)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	defer f.Close()
+
+	if _, err := f.Write(req.Image); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+
+	rs, err := tx.ExecContext(ctx, "INSERT INTO icons (user_id, image, hash) VALUES (?, ?, ?)", userID, []byte{}, hexHash)
+	//rs, err := tx.ExecContext(ctx, "INSERT INTO icons (user_id, image, hash) VALUES (?, ?, ?)", userID, req.Image, hex.EncodeToString(iconHash[:]))
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert new user icon: "+err.Error())
 	}
