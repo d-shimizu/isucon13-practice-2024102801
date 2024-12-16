@@ -9,6 +9,7 @@ services:
       - ./etc/nginx:/etc/nginx
       - ./var/log/nginx/access.log:/tmp/access.log:rw
       - ./var/log/nginx/error.log:/tmp/error.log:rw
+      - ../webapp/img:/home/isucon/webapp/img
     ports:
       #- 127.0.0.1:8443:80
       - 0.0.0.0:8443:80
