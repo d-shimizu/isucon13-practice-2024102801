@@ -98,26 +98,22 @@ func getIconHandler(c echo.Context) error {
 	}
 	defer tx.Rollback()
 
-	var userID int64
-	if err := tx.GetContext(ctx, &userID, "SELECT id FROM users WHERE name = ?", username); err != nil {
+	var user struct {
+		ID   int64   `db:"id"`
+		Hash *string `db:"hash"`
+	}
+	// ユーザIDとアイコンのハッシュ値を取得
+	if err := tx.GetContext(ctx, &user, "SELECT u.id, i.hash FROM users u LEFT OUTER JOIN icons i ON i.user_id = u.id WHERE u.name = ?", username); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return echo.NewHTTPError(http.StatusNotFound, "not found user that has the given username")
 		}
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get user ID: "+err.Error())
 	}
 
-	//var image []byte
-
-	// 画像の取得
-	var imageWithHash struct {
-		Hash string `db:"hash"`
-	}
-	if err := tx.GetContext(ctx, &imageWithHash, "SELECT hash FROM icons WHERE user_id = ?", userID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return c.File(fallbackImage)
-		} else {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get user icon: "+err.Error())
-		}
+	if user.Hash == nil {
+		c.Response().Header().Set(echo.HeaderContentType, "image/jpeg")
+		c.Response().Header().Set("X-Accel-Redirect", "/home/isucon/webapp/img/NoImage.jpg")
+		return c.NoContent(http.StatusOK)
 	}
 
 	// 画像のハッシュ値を計算
@@ -128,12 +124,13 @@ func getIconHandler(c echo.Context) error {
 	// [182 52 127 255 191 ...] (バイトスライスとしての出力)
 	//iconHash := hex.EncodeToString(hasher.Sum(nil)) // ハッシュの16進数表現
 	clientHash := c.Request().Header.Get("If-None-Match")
-	if clientHash == imageWithHash.Hash {
+	if clientHash == *user.Hash {
 		return c.NoContent(http.StatusNotModified)
 	}
 
-	//return c.Blob(http.StatusOK, "image/jpeg", imageWithHash.Image)
-	return c.File(getUserIconFilePath(imageWithHash.Hash))
+	c.Response().Header().Set(echo.HeaderContentType, "image/jpeg")
+	c.Response().Header().Set("X-Accel-Redirect", fmt.Sprintf("/home/isucon/webapp/img/%s.jpg", *user.Hash))
+	return c.NoContent(http.StatusOK)
 }
 
 const UserIconImageDir = "/home/isucon/webapp/img"
