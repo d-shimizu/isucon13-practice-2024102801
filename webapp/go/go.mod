@@ -11,6 +11,7 @@ require (
 	github.com/labstack/echo/v4 v4.11.1
 	github.com/labstack/gommon v0.4.0
 	golang.org/x/crypto v0.11.0
+	golang.org/x/sync v0.10.0
 )
 
 require (
