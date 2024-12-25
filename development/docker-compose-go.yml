@@ -15,13 +15,16 @@ services:
       - ../provisioning/ansible/roles/powerdns/files/pdns.conf:/etc/powerdns/pdns.conf:ro
       - ../provisioning/ansible/roles/powerdns/files/pdns.d/docker.conf:/etc/powerdns/pdns.d/docker.conf:ro
       - ../webapp/img:/home/isucon/webapp/img
+      - ../frontend/dist:/home/isucon/webapp/go/public
     environment:
       ISUCON13_MYSQL_DIALCONFIG_ADDRESS: mysql
       ISUCON13_POWERDNS_HOST: powerdns
-      ISUCON13_POWERDNS_SUBDOMAIN_ADDRESS: 127.0.0.1
+      #ISUCON13_POWERDNS_SUBDOMAIN_ADDRESS: 127.0.0.1
+      ISUCON13_POWERDNS_SUBDOMAIN_ADDRESS: 172.26.11.93
       ISUCON13_POWERDNS_DISABLED: true
     ports:
-      - "127.0.0.1:8080:8080"
+      #- "127.0.0.1:8080:8080"
+      - "0.0.0.0:8080:8080"
     depends_on:
       mysql:
         condition: service_healthy
