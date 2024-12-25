@@ -10,6 +10,7 @@ services:
       - ./var/log/nginx/access.log:/tmp/access.log:rw
       - ./var/log/nginx/error.log:/tmp/error.log:rw
       - ../webapp/img:/home/isucon/webapp/img
+      - ../frontend/dist:/home/isucon/webapp/go/public
     ports:
       #- 127.0.0.1:8443:80
       - 0.0.0.0:8443:80
@@ -46,9 +47,12 @@ services:
     environment:
       - "PDNS_AUTH_API_KEY=isudns"
     ports:
-      - "127.0.0.1:1053:53"
-      - "127.0.0.1:1053:53/udp"
-      - "127.0.0.1:8081:8081"
+      #- "127.0.0.1:1053:53"
+      - "0.0.0.0:1053:53"
+      #- "127.0.0.1:1053:53/udp"
+      - "0.0.0.0:1053:53/udp"
+      #- "127.0.0.1:8081:8081"
+      - "0.0.0.0:8081:8081"
     volumes:
       - powerdns_volume:/var/lib/powerdns
       # NOTE: gsqlite3バックエンドを読み込もうとするので、これを上書きしてしまう
