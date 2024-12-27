@@ -1,0 +1,2 @@
+2024/12/17 07:50:08 [error] 19#19: *41 upstream prematurely closed connection while reading response header from upstream, client: 172.18.0.1, server: , request: "GET /api/user/test001/icon HTTP/1.1", upstream: "http://172.18.0.3:8080/api/user/test001/icon", host: "pipe.u.isucon.dev:8443"
+2024/12/17 08:06:11 [error] 19#19: *41 upstream prematurely closed connection while reading response header from upstream, client: 172.18.0.1, server: , request: "GET /api/user/test001/icon HTTP/1.1", upstream: "http://172.18.0.3:8080/api/user/test001/icon", host: "pipe.u.isucon.dev:8443"
