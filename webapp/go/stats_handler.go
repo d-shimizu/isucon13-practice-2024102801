@@ -72,38 +72,67 @@ func getUserRanking() (UserRanking, error) {
 		defer tx.Rollback()
 
 		var users []*UserModel
-		if err := tx.SelectContext(context.Background(), &users, "SELECT * FROM users"); err != nil {
+		if err := tx.SelectContext(context.Background(), &users, "SELECT id, name FROM users"); err != nil {
 			return nil, err
 		}
 
-		var ranking UserRanking
+		//var ranking UserRanking
+		userRankingData := map[int64]UserRankingEntry{}
 		for _, user := range users {
-			var reactions int64
-			query := `
-			SELECT COUNT(*) FROM users u
-			INNER JOIN livestreams l ON l.user_id = u.id
-			INNER JOIN reactions r ON r.livestream_id = l.id
-			WHERE u.id = ?`
+			userRankingData[user.ID] = UserRankingEntry{Username: user.Name}
+		}
 
-			if err := tx.GetContext(context.Background(), &reactions, query, user.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return nil, err
-			}
+		// リアクション数
+		type UserReaction struct {
+			UserID    int64 `db:"user_id"`
+			Reactions int64 `db:"reactions"`
+		}
+		var reactions []*UserReaction
+		if err := tx.SelectContext(context.Background(), &reactions, `
+		SELECT
+			u.id AS user_id
+			, COUNT(*) AS reactions
+		FROM users u
+		INNER JOIN livestreams l ON l.user_id = u.id
+		INNER JOIN reactions r ON r.livestream_id = l.id
+		GROUP BY u.id
+		`); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
 
-			var tips int64
-			query = `
-			SELECT IFNULL(SUM(l2.tip), 0) FROM users u
-			INNER JOIN livestreams l ON l.user_id = u.id
-			INNER JOIN livecomments l2 ON l2.livestream_id = l.id
-			WHERE u.id = ?`
-			if err := tx.GetContext(context.Background(), &tips, query, user.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return nil, err
-			}
-			score := reactions + tips
-			ranking = append(ranking, UserRankingEntry{
-				Username: user.Name,
-				Score:    score,
-			})
+		// チップ合計
+		type UserTotalTip struct {
+			UserID    int64 `db:"user_id"`
+			TotalTips int64 `db:"total_tips"`
+		}
+		var totalTips []*UserTotalTip
+		if err := tx.SelectContext(context.Background(), &totalTips, `
+		SELECT
+			u2.id AS user_id,
+			IFNULL(SUM(lc.tip), 0) AS total_tips
+		FROM users u2
+		INNER JOIN livestreams ls ON ls.user_id = u2.id
+		INNER JOIN livecomments lc ON lc.livestream_id = ls.id
+		GROUP BY u2.id
+		`); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
 
+		for _, reaction := range reactions {
+			d := userRankingData[reaction.UserID]
+			d.Score += reaction.Reactions
+			userRankingData[reaction.UserID] = d
+		}
+
+		for _, tip := range totalTips {
+			d := userRankingData[tip.UserID]
+			d.Score += tip.TotalTips
+			userRankingData[tip.UserID] = d
+		}
+
+		var ranking = make(UserRanking, 0, len(userRankingData))
+		for _, entry := range userRankingData {
+			ranking = append(ranking, entry)
 		}
 
 		sort.Sort(ranking)
