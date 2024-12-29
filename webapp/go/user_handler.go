@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,6 +31,7 @@ const (
 )
 
 var fallbackImage = "../img/NoImage.jpg"
+var fallBackIconHash = "E8ZWrBYn5twiBD9ykgxHnnvXTGx3YIQuUhLy6Q3niBZwEOVZjIGiPel5vyYqe5Og"
 
 type UserModel struct {
 	ID             int64  `db:"id"`
@@ -98,39 +100,37 @@ func getIconHandler(c echo.Context) error {
 	}
 	defer tx.Rollback()
 
-	var user struct {
-		ID   int64   `db:"id"`
-		Hash *string `db:"hash"`
-	}
+	//var image []byte
+	var userID int64
 	// ユーザIDとアイコンのハッシュ値を取得
-	if err := tx.GetContext(ctx, &user, "SELECT u.id, i.hash FROM users u LEFT OUTER JOIN icons i ON i.user_id = u.id WHERE u.name = ?", username); err != nil {
+	if err := tx.GetContext(ctx, &userID, "SELECT id FROM users WHERE name = ?", username); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return echo.NewHTTPError(http.StatusNotFound, "not found user that has the given username")
 		}
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get user ID: "+err.Error())
 	}
 
-	if user.Hash == nil {
-		c.Response().Header().Set(echo.HeaderContentType, "image/jpeg")
-		c.Response().Header().Set("X-Accel-Redirect", "/home/isucon/webapp/img/NoImage.jpg")
-		return c.NoContent(http.StatusOK)
+	// 画像のハッシュ値を取得
+	var imageWithHash struct {
+		Image []byte `db:"image"`
+		Hash  string `db:"hash"`
 	}
 
-	// 画像のハッシュ値を計算
-	//hasher := sha256.New()
-	//hasher.Write(image)
-	// ハッシュ値を16進数文字列に変換
-	//  SHA-256 のハッシュ値（バイナリ）は以下のようなバイト列として出力される
-	// [182 52 127 255 191 ...] (バイトスライスとしての出力)
-	//iconHash := hex.EncodeToString(hasher.Sum(nil)) // ハッシュの16進数表現
-	clientHash := c.Request().Header.Get("If-None-Match")
-	if clientHash == *user.Hash {
+	if err := tx.GetContext(ctx, &imageWithHash, "SELECT image, hash FROM icons WHERE user_id = ?", userID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return c.File(fallbackImage)
+		} else {
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get user icon: "+err.Error())
+		}
+	}
+
+	//clientIconHash := c.QueryParam("hash")
+	clientIconHash := c.Request().Header.Get("If-None-Match")
+	if clientIconHash == imageWithHash.Hash {
 		return c.NoContent(http.StatusNotModified)
 	}
 
-	c.Response().Header().Set(echo.HeaderContentType, "image/jpeg")
-	c.Response().Header().Set("X-Accel-Redirect", fmt.Sprintf("/home/isucon/webapp/img/%s.jpg", *user.Hash))
-	return c.NoContent(http.StatusOK)
+	return c.Blob(http.StatusOK, "image/jpeg", imageWithHash.Image)
 }
 
 const UserIconImageDir = "/home/isucon/webapp/img"
@@ -182,11 +182,12 @@ func postIconHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
 
-	rs, err := tx.ExecContext(ctx, "INSERT INTO icons (user_id, image, hash) VALUES (?, ?, ?)", userID, []byte{}, hexHash)
+	rs, err := tx.ExecContext(ctx, "INSERT INTO icons (user_id, image, hash) VALUES (?, ?, ?)", userID, req.Image, hexHash)
 	//rs, err := tx.ExecContext(ctx, "INSERT INTO icons (user_id, image, hash) VALUES (?, ?, ?)", userID, req.Image, hex.EncodeToString(iconHash[:]))
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert new user icon: "+err.Error())
 	}
+	userCache.Delete(userID)
 
 	iconID, err := rs.LastInsertId()
 	if err != nil {
@@ -294,6 +295,7 @@ func registerHandler(c echo.Context) error {
 	if _, err := tx.NamedExecContext(ctx, "INSERT INTO themes (user_id, dark_mode) VALUES(:user_id, :dark_mode)", themeModel); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert user theme: "+err.Error())
 	}
+	userCache.Delete(userID)
 
 	if out, err := exec.Command("pdnsutil", "add-record", "u.isucon.dev", req.Name, "A", "0", powerDNSSubdomainAddress).CombinedOutput(); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, string(out)+": "+err.Error())
@@ -437,7 +439,14 @@ func verifyUserSession(c echo.Context) error {
 	return nil
 }
 
+var (
+	userCache = sync.Map{}
+)
+
 func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (User, error) {
+	if user, ok := userCache.Load(userModel.ID); ok {
+		return user.(User), nil
+	}
 	themeModel := ThemeModel{}
 	if err := tx.GetContext(ctx, &themeModel, "SELECT * FROM themes WHERE user_id = ?", userModel.ID); err != nil {
 		return User{}, err
