@@ -187,6 +187,7 @@ func postIconHandler(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert new user icon: "+err.Error())
 	}
+	// icon 画像が登録されたらキャッシュを削除
 	userCache.Delete(userID)
 
 	iconID, err := rs.LastInsertId()
@@ -295,6 +296,8 @@ func registerHandler(c echo.Context) error {
 	if _, err := tx.NamedExecContext(ctx, "INSERT INTO themes (user_id, dark_mode) VALUES(:user_id, :dark_mode)", themeModel); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert user theme: "+err.Error())
 	}
+	userCache.Delete(userID)
+
 	userCache.Delete(userID)
 
 	if out, err := exec.Command("pdnsutil", "add-record", "u.isucon.dev", req.Name, "A", "0", powerDNSSubdomainAddress).CombinedOutput(); err != nil {
@@ -443,6 +446,7 @@ var (
 	userCache = sync.Map{}
 )
 
+// ユーザー情報を取得
 func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (User, error) {
 	if user, ok := userCache.Load(userModel.ID); ok {
 		return user.(User), nil
@@ -469,6 +473,8 @@ func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (Us
 	}
 	//iconHash := sha256.Sum256(image)
 
+	// ユーザー情報を返却
+	// テーマ情報も返却
 	user := User{
 		ID:          userModel.ID,
 		Name:        userModel.Name,
@@ -481,6 +487,8 @@ func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (Us
 		//IconHash: fmt.Sprintf("%x", iconHash),
 		IconHash: hash,
 	}
+	// ユーザー情報を取得したらキャッシュに保存
+	userCache.Store(userModel.ID, user)
 
 	return user, nil
 }
