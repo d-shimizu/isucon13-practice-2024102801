@@ -31,7 +31,7 @@ const (
 )
 
 var fallbackImage = "../img/NoImage.jpg"
-var fallBackIconHash = "E8ZWrBYn5twiBD9ykgxHnnvXTGx3YIQuUhLy6Q3niBZwEOVZjIGiPel5vyYqe5Og"
+var fallBackIconHash = "d9f8294e9d895f81ce62e73dc7d5dff862a4fa40bd4e0fecf53f7526a8edcac0"
 
 type UserModel struct {
 	ID             int64  `db:"id"`
@@ -188,7 +188,7 @@ func postIconHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert new user icon: "+err.Error())
 	}
 	// icon 画像が登録されたらキャッシュを削除
-	userCache.Delete(userID)
+	userFullCache.Delete(userID)
 
 	iconID, err := rs.LastInsertId()
 	if err != nil {
@@ -223,8 +223,9 @@ func getMeHandler(c echo.Context) error {
 	}
 	defer tx.Rollback()
 
-	userModel := UserModel{}
-	err = tx.GetContext(ctx, &userModel, "SELECT * FROM users WHERE id = ?", userID)
+	//userModel := UserModel{}
+	//err = tx.GetContext(ctx, &userModel, "SELECT * FROM users WHERE id = ?", userID)
+	userModel, err := getUser(ctx, tx, userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return echo.NewHTTPError(http.StatusNotFound, "not found user that has the userid in session")
 	}
@@ -296,9 +297,7 @@ func registerHandler(c echo.Context) error {
 	if _, err := tx.NamedExecContext(ctx, "INSERT INTO themes (user_id, dark_mode) VALUES(:user_id, :dark_mode)", themeModel); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert user theme: "+err.Error())
 	}
-	userCache.Delete(userID)
-
-	userCache.Delete(userID)
+	userFullCache.Delete(userID)
 
 	if out, err := exec.Command("pdnsutil", "add-record", "u.isucon.dev", req.Name, "A", "0", powerDNSSubdomainAddress).CombinedOutput(); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, string(out)+": "+err.Error())
@@ -443,12 +442,13 @@ func verifyUserSession(c echo.Context) error {
 }
 
 var (
-	userCache = sync.Map{}
+	userCache     = sync.Map{}
+	userFullCache = sync.Map{}
 )
 
 // ユーザー情報を取得
 func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (User, error) {
-	if user, ok := userCache.Load(userModel.ID); ok {
+	if user, ok := userFullCache.Load(userModel.ID); ok {
 		return user.(User), nil
 	}
 	themeModel := ThemeModel{}
@@ -461,6 +461,7 @@ func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (Us
 	//var image []byte
 	var hash string
 	if err := tx.GetContext(ctx, &hash, "SELECT hash FROM icons WHERE user_id = ?", userModel.ID); err != nil {
+		// SQL の結果が 0 行の場合以外の場合
 		if !errors.Is(err, sql.ErrNoRows) {
 			return User{}, err
 		}
@@ -488,7 +489,23 @@ func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (Us
 		IconHash: hash,
 	}
 	// ユーザー情報を取得したらキャッシュに保存
-	userCache.Store(userModel.ID, user)
+	userFullCache.Store(userModel.ID, user)
 
 	return user, nil
+}
+
+func getUser(ctx context.Context, tx *sqlx.Tx, userID int64) (UserModel, error) {
+	// キャッシュにあればキャッシュから取得
+	if user, ok := userCache.Load(userID); ok {
+		return user.(UserModel), nil
+	}
+
+	userModel := UserModel{}
+	if err := tx.GetContext(ctx, &userModel, "SELECT * FROM users WHERE id = ?", userID); err != nil {
+		return UserModel{}, err
+	}
+	userCache.Store(userID, userModel)
+
+	return userModel, nil
+
 }
