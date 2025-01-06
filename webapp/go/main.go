@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
@@ -106,7 +107,15 @@ func connectDB(logger echo.Logger) (*sqlx.DB, error) {
 	return db, nil
 }
 
+var cacheLock = sync.Mutex{}
+
 func initializeHandler(c echo.Context) error {
+	// initialize 時に sync mapを初期化
+	cacheLock.Lock()
+	userCache = sync.Map{}
+	userFullCache = sync.Map{}
+	cacheLock.Unlock()
+
 	if out, err := exec.Command("../sql/init.sh").CombinedOutput(); err != nil {
 		c.Logger().Warnf("init.sh failed with err=%s", string(out))
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to initialize: "+err.Error())
